@@ -1,0 +1,11 @@
+[package]
+name = "rust-gendex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "3.2.16", features = ["derive"] }
+fancy-regex = "0.10.0"
+regex = "1"
+wax = "0.5.0"
+walkdir = "2.3.2"
