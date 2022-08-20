@@ -1,11 +1,10 @@
-use std::fs;
-use std::io::Write;
+use std::{fs, result};
+use std::io::{Write, BufReader, BufRead};
+use std::io::Read;
 use std::path::PathBuf;
-use std::str::FromStr;
+use glob::glob;
 use clap::Parser;
 use fancy_regex::Regex;
-use wax::Glob;
-use wax::LinkBehavior;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -41,66 +40,104 @@ fn main() {
 
     // Extract all file pattern regexes inside the index declarattion.
     let re_file_patterns = Regex::new(r#"(\"[^\r\n\s]+\"(?=[,\]]))"#).unwrap();
+    let re_export_style = Regex::new("`.+`").unwrap();
+
 
     // Store pattern in vec for matchers and negations.
-    let mut matching_patterns:Vec<String> = vec![];
-    let mut negating_patterns:Vec<String> = vec![];
+    let mut inclusion_patterns:Vec<String> = vec![];
+    let mut exclusion_patterns:Vec<String> = vec![];
 
     re_file_patterns.captures_iter(index_group.as_str()).for_each(|file_pattern| {
         let pattern = file_pattern.expect("No pattern found").get(1).expect("No match").as_str().replace("\"", "");
 
         if pattern.starts_with("!") {
-            negating_patterns.push(pattern);
+            exclusion_patterns.push(pattern);
         } else {
-            matching_patterns.push(pattern);
+            inclusion_patterns.push(pattern);
         }
     });
 
-    assert!(negating_patterns.len() < 10, "Cannot have more than 10 exlusive patterns.");
+    let captures_export_template = re_export_style.captures(index_group.as_str()).expect("RegEx Error").expect("No Match");
+    let export_template_match = captures_export_template.get(1).expect("No valid export template found.");
+    let export_template_captures = Regex::new(r#"\$\{.+\}"#).unwrap().captures(export_template_match.as_str()).expect("RegEx Error").expect("No Match found.");
+
+    let export_template_string = export_template_captures.get(1).expect("No Group");
+
+    let mut index_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(true)
+        .open(args.file.clone())
+        .unwrap();
+
+    let mut final_content:Vec<String> = vec![];
+
+    let index_lines: Vec<_> = indexfile_content.split("\n").collect();
+    final_content.push(index_lines.get(0).unwrap().to_string());
 
     // Loop over match patterns and filter files inside directory.
-    for pattern in matching_patterns.iter() {
-        let file_matches = find_files_matching(&pattern, directory_path.to_str().unwrap(), negating_patterns.as_slice());
-
-        let mut index_file = fs::OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(args.file.clone())
-            .unwrap();
+    for pattern in inclusion_patterns.iter() {
+        let file_matches = find_files_matching(&pattern, directory_path.to_str().unwrap(), exclusion_patterns.as_slice());
 
         for file in file_matches.iter() {
-            println!("File: {  }", file);
-            write!(index_file, "export * from \"{  }\"\n", file.replace(".ts", "")).expect("Could not write to file.");
+            final_content.push(format!("export * from \"{  }\"", file.replace(".ts", "")));
+            //writeln!(index_file, "export * from \"{  }\"", file.replace(".ts", "")).expect("Could not write to file.");
         }
     }
 
+    for line in final_content.iter() {
+        println!("Writing { }", line);
+        writeln!(index_file, "{  }", line).expect("Could not write to file.");
+    }
 
-
-    // Extracts the formatter function from the index declaration.
 }
 
-fn find_files_matching(pattern: &str, source_folder: &str, excluded_patterns: &[String]) -> Vec<String> {
-    println!("Using Pattern: {  }", trim_first_character(pattern));
-    println!("Using Path: {  }", source_folder);
-    let file_glob = Glob::new(trim_first_character(pattern)).unwrap();
-
-
+fn find_files_matching(file_pattern: &str, source_folder: &str, exclusion_patterns: &[String]) -> Vec<String> {
+    // Vector of file paths to be added to the index file.
     let mut files = vec![];
-    for file in file_glob.walk_with_behavior(source_folder, LinkBehavior::ReadFile).not(["**/testUtils", "**/__tests__", "types.d.ts", "index.ts"]).unwrap() {
-        let file_path = file.unwrap().path().to_str().unwrap().replace(source_folder, ".");
-        files.push(file_path)
+    // Regex to remove glob negation to be able to use it in a regex.
+    let cleaning_regex = Regex::new("!?\\**").unwrap();
+    // Concat the source_folder with the file glob pattern to make sure we are running the right folder.
+    let glob_path = format!("{ }/{ }", source_folder, trim_first_character(file_pattern));
+    for file in glob(&glob_path).expect("Invalid glob pattern") {
+        match file {
+            Ok(path) => {
+                let mut excluded = false;
+                for pattern in exclusion_patterns {
+                    let cleaned_excluded = cleaning_regex.replace(&pattern, ".+");
+                    let excluded_pattern = Regex::new(&cleaned_excluded.as_ref()).unwrap();
+                    let match_result = excluded_pattern.is_match(&path.to_str().unwrap());
+                    if match_result.is_ok() {
+                        let matches = match_result.unwrap();
+                        if matches {
+                            excluded = true;
+                        }
+                    }
+                }
+
+                // If file is not exlusion then add it to the list of files.
+                if !excluded {
+                    files.push(path.display().to_string().replace(source_folder, "."))
+                }
+            },
+            Err(e) => println!("{:?}", e)
+        }
     }
 
     files
 }
 
-fn trim_first_character(file_pattern: &str) -> &str {
-    if file_pattern.starts_with("./") {
-        let mut chars = file_pattern.chars();
+/// Removes the leading ./ of local file paths
+///
+///  # Arguments
+///  * `file_path` - relative file path to be cleaned from local reference.
+fn trim_first_character(file_path: &str) -> &str {
+    if file_path.starts_with("./") {
+        let mut chars = file_path.chars();
         chars.next();
         chars.next();
         return chars.as_str()
     } else {
-        return file_pattern
+        return file_path
     }
 }

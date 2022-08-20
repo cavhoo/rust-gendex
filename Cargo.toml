@@ -7,5 +7,5 @@ edition = "2021"
 clap = { version = "3.2.16", features = ["derive"] }
 fancy-regex = "0.10.0"
 regex = "1"
-wax = "0.5.0"
+glob = "0.3.0"
 walkdir = "2.3.2"
