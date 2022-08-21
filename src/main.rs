@@ -1,10 +1,11 @@
-use std::{fs, result};
-use std::io::{Write, BufReader, BufRead};
-use std::io::Read;
+use std::{fs};
+use std::io::{Write};
 use std::path::PathBuf;
 use glob::glob;
 use clap::Parser;
 use fancy_regex::Regex;
+use handlebars::Handlebars;
+use serde_json::json;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -21,6 +22,9 @@ struct Args {
 fn main() {
     // Read cli arguments
     let args = Args::parse();
+
+    // Handlebars
+    let mut handlebars = Handlebars::new();
 
     let indexfile_content = fs::read_to_string(args.file.clone()).expect("Could not read provided index.ts file. Please make sure the file exists.");
 
@@ -40,7 +44,7 @@ fn main() {
 
     // Extract all file pattern regexes inside the index declarattion.
     let re_file_patterns = Regex::new(r#"(\"[^\r\n\s]+\"(?=[,\]]))"#).unwrap();
-    let re_export_style = Regex::new("`.+`").unwrap();
+    let re_export_style = Regex::new("(?:`)(.+)(?:`)").unwrap();
 
 
     // Store pattern in vec for matchers and negations.
@@ -57,11 +61,12 @@ fn main() {
         }
     });
 
+
     let captures_export_template = re_export_style.captures(index_group.as_str()).expect("RegEx Error").expect("No Match");
     let export_template_match = captures_export_template.get(1).expect("No valid export template found.");
-    let export_template_captures = Regex::new(r#"\$\{.+\}"#).unwrap().captures(export_template_match.as_str()).expect("RegEx Error").expect("No Match found.");
+    let export_file_placeholder = Regex::new(r#"\$\{.+\}"#).unwrap().replace(export_template_match.as_str(), "{{path}}");
 
-    let export_template_string = export_template_captures.get(1).expect("No Group");
+    handlebars.register_template_string("export", export_file_placeholder.into_owned().as_str()).expect("Error creating template.");
 
     let mut index_file = fs::OpenOptions::new()
         .read(true)
@@ -80,13 +85,12 @@ fn main() {
         let file_matches = find_files_matching(&pattern, directory_path.to_str().unwrap(), exclusion_patterns.as_slice());
 
         for file in file_matches.iter() {
-            final_content.push(format!("export * from \"{  }\"", file.replace(".ts", "")));
+            final_content.push(handlebars.render("export", &json!({"path": file.replace(".ts", "")})).unwrap());
             //writeln!(index_file, "export * from \"{  }\"", file.replace(".ts", "")).expect("Could not write to file.");
         }
     }
 
     for line in final_content.iter() {
-        println!("Writing { }", line);
         writeln!(index_file, "{  }", line).expect("Could not write to file.");
     }
 
